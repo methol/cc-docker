@@ -63,13 +63,22 @@ RUN mkdir -p /root/.codex
 # 5) git SSH → HTTPS,免密 clone 公开仓库(build 环境无 SSH key)
 RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-# 6) 添加官方 OpenAI plugin marketplace 并预装公开插件
-RUN codex plugin marketplace add openai/role-specific-plugins
+# 6) 安装 codex-security 插件
+#    openai/plugins 是官方 openai-curated marketplace,但名称被 CLI 内置保留,
+#    需 sparse clone 后将 marketplace.json 中的名称改为 openai-security 才能注册。
+#    marketplace 注册路径写死在配置里,需保留到镜像中(不能 rm -rf)。
+RUN git clone --depth 1 --filter=blob:none --sparse \
+        https://github.com/openai/plugins.git /root/.codex/openai-plugins \
+    && cd /root/.codex/openai-plugins \
+    && git sparse-checkout set '.agents/plugins' 'plugins/codex-security' \
+    && sed -i 's/"openai-curated"/"openai-security"/g' .agents/plugins/marketplace.json \
+    && codex plugin marketplace add /root/.codex/openai-plugins \
+    && codex plugin add codex-security@openai-security
 
-# 7) 构建期自检:CLI 可调用 + marketplace 已注册
+# 7) 构建期自检:CLI 可调用 + codex-security 插件已安装启用
 RUN codex --version && \
-    codex plugin marketplace list | grep -q "role-specific-plugins" && \
-    echo "✅ codex CLI + marketplace ready"
+    codex plugin list | grep -q "codex-security" && \
+    echo "✅ codex CLI + codex-security plugin ready"
 
 # TMPDIR:security-diff-scan 的 scan bundle 写入位置
 ENV TMPDIR=/tmp
