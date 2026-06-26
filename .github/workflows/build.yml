@@ -27,7 +27,7 @@ on:
   push:
     branches: [main]
     paths:
-      - Dockerfile
+      - claude/Dockerfile
       - .github/workflows/build.yml
 
 permissions:
@@ -112,7 +112,7 @@ jobs:
         if: steps.decide.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: claude
           platforms: linux/amd64,linux/arm64
           build-args: |
             CC_VERSION=${{ steps.ver.outputs.version }}

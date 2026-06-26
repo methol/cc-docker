@@ -1,5 +1,5 @@
-# 预装 OpenAI Codex CLI 的 CI 镜像,支持 codex-security 安全扫描
-# ⚠️ 构建时需要能访问 npm registry
+# 预装 OpenAI Codex CLI(官方原生安装) + 两个 plugin 的 CI 镜像
+# ⚠️ 构建期需访问 chatgpt.com / github.com
 #
 # codex-security 插件是 OpenAI 企业级商业插件,须通过 Codex Web App 授权安装。
 # 运行时通过 -v 挂载或环境变量注入已激活插件的 CODEX_HOME:
@@ -18,7 +18,7 @@ FROM node:24-slim
 # 0) 版本号入参:CI 传入具体 Codex 版本,本地构建默认 latest
 ARG CODEX_VERSION=latest
 LABEL org.opencontainers.image.title="codex-docker" \
-      org.opencontainers.image.description="预装 OpenAI Codex CLI + 开发工具的 CI 镜像,支持 codex-security 安全扫描" \
+      org.opencontainers.image.description="预装 OpenAI Codex CLI(原生安装) + codex-security/karpathy plugins 的 CI 镜像" \
       org.opencontainers.image.source="https://github.com/methol/agent-docker" \
       org.opencontainers.image.version="${CODEX_VERSION}"
 
@@ -49,21 +49,26 @@ RUN --mount=type=secret,id=proxy_ca,target=/tmp/proxy-ca.crt,required=false \
         update-ca-certificates; \
     fi
 
-# 2) 安装 Codex CLI(钉死到 CI 传入的版本,保证镜像内版本 = 镜像 tag)
-RUN npm install -g @openai/codex@${CODEX_VERSION}
-
-# 3) 固定 HOME,保证构建期与运行期路径一致
+# 2) 固定 HOME,保证构建期与运行期路径一致
 ENV HOME=/root
 
-# 4) CODEX_HOME:Codex 配置/插件目录骨架
+# 3) CODEX_HOME:Codex 配置/插件目录骨架
 #    codex-security 是商业插件,运行时通过 volume 挂载已激活的 CODEX_HOME
 ENV CODEX_HOME=/root/.codex
 RUN mkdir -p /root/.codex
 
+# 4) 原生安装器把二进制放在 ~/.local/bin,后续 RUN 必须能直接调用 codex
+ENV PATH=/root/.local/bin:${PATH}
+
 # 5) git SSH → HTTPS,免密 clone 公开仓库(build 环境无 SSH key)
 RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-# 6) 安装 codex-security 插件
+# 6) 官方原生安装(curl 方式,不依赖 Node;详见 https://developers.openai.com/codex/cli)
+#    版本通过 CODEX_RELEASE 注入;CODEX_NON_INTERACTIVE 跳过 prompt
+RUN curl -fsSL https://chatgpt.com/codex/install.sh \
+      | CODEX_RELEASE="${CODEX_VERSION}" CODEX_NON_INTERACTIVE=1 sh
+
+# 7) 安装 codex-security 插件
 #    openai/plugins 是官方 openai-curated marketplace,但名称被 CLI 内置保留,
 #    需 sparse clone 后将 marketplace.json 中的名称改为 openai-security 才能注册。
 #    marketplace 注册路径写死在配置里,需保留到镜像中(不能 rm -rf)。
@@ -75,13 +80,13 @@ RUN git clone --depth 1 --filter=blob:none --sparse \
     && codex plugin marketplace add /root/.codex/openai-plugins \
     && codex plugin add codex-security@openai-security
 
-# 7) 安装 andrej-karpathy-skills 插件(第三方,forrestchang/andrej-karpathy-skills)
+# 8) 安装 andrej-karpathy-skills 插件(第三方,forrestchang/andrej-karpathy-skills)
 #    marketplace 名称 karpathy-skills 不保留,可直接通过 GitHub 地址注册并安装。
 #    安装后克隆目录保留在 /root/.codex/.tmp/marketplaces/karpathy-skills(CODEX_HOME 内)。
 RUN codex plugin marketplace add forrestchang/andrej-karpathy-skills \
     && codex plugin add andrej-karpathy-skills@karpathy-skills
 
-# 8) 构建期自检:CLI 可调用 + 两个插件均已安装启用
+# 9) 构建期自检:CLI 可调用 + 两个插件均已安装启用
 RUN codex --version && \
     codex plugin list | grep -q "codex-security" && \
     codex plugin list | grep -q "andrej-karpathy-skills" && \
