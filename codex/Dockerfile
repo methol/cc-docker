@@ -1,16 +1,29 @@
-# 预装 OpenAI Codex + codex-security plugin 的 CI 镜像
-# 用途:在 CI runner 中执行 security-diff-scan,无需每次安装依赖
-# ⚠️ 构建时需要能访问 npm registry 和 api.openai.com
+# 预装 OpenAI Codex CLI 的 CI 镜像,支持 codex-security 安全扫描
+# ⚠️ 构建时需要能访问 npm registry
+#
+# codex-security 插件是 OpenAI 企业级商业插件,须通过 Codex Web App 授权安装。
+# 运行时通过 -v 挂载或环境变量注入已激活插件的 CODEX_HOME:
+#
+#   docker run --rm \
+#     -v "$HOME/.codex:/root/.codex:ro" \
+#     -v "$(pwd):/workspace" \
+#     -e OPENAI_API_KEY \
+#     methol/codex-docker \
+#     codex exec --sandbox workspace-write \
+#       --output-last-message /tmp/security-review.md \
+#       'Use $codex-security:security-diff-scan to review changes from origin/main to HEAD.'
+# syntax=docker/dockerfile:1.7
 FROM node:24-slim
 
 # 0) 版本号入参:CI 传入具体 Codex 版本,本地构建默认 latest
 ARG CODEX_VERSION=latest
 LABEL org.opencontainers.image.title="codex-docker" \
-      org.opencontainers.image.description="预装 OpenAI Codex + codex-security plugin 的 CI 镜像" \
+      org.opencontainers.image.description="预装 OpenAI Codex CLI + 开发工具的 CI 镜像,支持 codex-security 安全扫描" \
       org.opencontainers.image.source="https://github.com/methol/agent-docker" \
       org.opencontainers.image.version="${CODEX_VERSION}"
 
-# 1) 基础工具:git(含完整 history 供 diff-scan 使用)+ 常用开发工具
+# 1) 基础工具:git(保留完整 history 供 diff-scan 使用)+ 常用开发工具
+#    与 cc-docker 保持一致,方便在同一 pipeline 中混用
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git git-lfs \
         curl wget ca-certificates bash \
@@ -27,27 +40,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && rm -rf /var/lib/apt/lists/*
 
+# helper:安装可选代理 CA 证书到系统 trust store
+# 仅在本地代理环境构建时注入,生产 CI 无需提供(required=false)
+# 安装后 git/curl/npm 均自动信任该 CA,无需额外 env var
+RUN --mount=type=secret,id=proxy_ca,target=/tmp/proxy-ca.crt,required=false \
+    if [ -f /tmp/proxy-ca.crt ]; then \
+        cp /tmp/proxy-ca.crt /usr/local/share/ca-certificates/proxy-ca.crt && \
+        update-ca-certificates; \
+    fi
+
 # 2) 安装 Codex CLI(钉死到 CI 传入的版本,保证镜像内版本 = 镜像 tag)
 RUN npm install -g @openai/codex@${CODEX_VERSION}
 
-# 3) 固定 HOME,保证构建期安装位置与运行期读取位置一致
+# 3) 固定 HOME,保证构建期与运行期路径一致
 ENV HOME=/root
 
-# 4) CODEX_HOME:plugin 默认安装到此目录,固化进镜像层后容器启动即可用
+# 4) CODEX_HOME:Codex 配置/插件目录骨架
+#    codex-security 是商业插件,运行时通过 volume 挂载已激活的 CODEX_HOME
 ENV CODEX_HOME=/root/.codex
+RUN mkdir -p /root/.codex
 
-# 5) TMPDIR:security-diff-scan 会把 scan bundle 写到这里,需要可写
-ENV TMPDIR=/tmp
-
-# 6) git SSH → HTTPS,免密 clone 公开仓库(构建环境无 SSH key)
+# 5) git SSH → HTTPS,免密 clone 公开仓库(build 环境无 SSH key)
 RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
 
-# 7) 安装 codex-security plugin(user scope,落在 CODEX_HOME,固化进镜像层)
-#    plugin 提供 $codex-security:security-diff-scan skill,供 CI 调用
-RUN codex plugin install codex-security
+# 6) 添加官方 OpenAI plugin marketplace 并预装公开插件
+RUN codex plugin marketplace add openai/role-specific-plugins
 
-# 8) 构建期自检:装不上就让 build 失败
-RUN codex plugin list | grep -q "codex-security" && echo "✅ codex-security plugin ready"
+# 7) 构建期自检:CLI 可调用 + marketplace 已注册
+RUN codex --version && \
+    codex plugin marketplace list | grep -q "role-specific-plugins" && \
+    echo "✅ codex CLI + marketplace ready"
 
-# 工作目录:CI 会把被扫描仓库 checkout 到这里
+# TMPDIR:security-diff-scan 的 scan bundle 写入位置
+ENV TMPDIR=/tmp
+
 WORKDIR /workspace
